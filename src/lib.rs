@@ -1,9 +1,16 @@
+//! # esp32-nvs crate
+//! 
+//! `esp32-nvs` crate is library to generate ESP32 NVS partition data from Rust code.
+
+//! # esp32-nvs クレート 
+//!  
+//! `esp32-nvs` create は ESP32 NVSパーティションのデータをRustから生成するためのライブラリです。
+
 // main source file of esp32-nvs crate
 // Copyright 2022 Kenta Ida 
 // SPDX-License-Identifier: MIT
 //
 use std::{collections::HashMap, vec::Vec};
-
 use zerocopy::{AsBytes, ByteOrder, FromBytes, LittleEndian, Unaligned, U32};
 
 // Use polynomial = 0x04c11db7, initial = 0x00000000, xorout = 0xffffffff (inverted) CRC32
@@ -31,18 +38,27 @@ where
     digest.finalize()
 }
 
+/// NVS Error type
 #[derive(Debug)]
 pub enum NvsError {
+    /// The length of the specified string exceeds the limit of string length NVS partition supports.
     StringTooLarge,
 }
 
+// NVS Page state
 #[derive(Clone, Copy, Debug)]
 pub enum PageState {
+    /// Uninitialized, all entries in the page is free.
     Uninitialized,
+    /// Active, some entries are free and can add some entries.
     Active,
+    /// Full, no entries are free and cannot add an entry.
     Full,
+    /// Freeing, marked to erase.
     Freeing,
+    /// Corrupted
     Corrupt,
+    /// Invalid
     Invalid,
 }
 
@@ -460,6 +476,7 @@ impl<const NUMBER_OF_ENTRIES: usize> Page<NUMBER_OF_ENTRIES> {
     }
 }
 
+/// Fixed length (15 + 1) string to hold namespace and entry key string.
 pub type NvsKey = heapless::String<15>;
 
 pub struct NvsPartition<const NUMBER_OF_ENTRIES_IN_PAGE: usize = { 4096 / 32 - 2 }>
@@ -523,6 +540,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         }
     }
 
+    /// Add a primitive entry
     pub fn add_primitive_entry<T: ToNvsData>(
         &mut self,
         namespace: &NvsKey,
@@ -534,6 +552,8 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         self.add_entry_or_data(EntryOrData::Entry(entry));
     }
 
+    /// Add a string entry. 
+    /// the length of string must be within `(NUMBER_OF_ENTRIES - 1) * Entry::SIZE` - 1, which is `(126 - 1) * 32 - 1 == 3999`
     pub fn add_string_entry(
         &mut self,
         namespace: &NvsKey,
@@ -582,6 +602,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         Ok(())
     }
 
+    /// Add a BLOB entry.
     pub fn add_binary_entry(
         &mut self,
         namespace: &NvsKey,
@@ -655,6 +676,8 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         }
         Ok(())
     }
+
+    /// Write NVS partition to the `std::io::Write` stream.
     pub fn write<W: std::io::Write>(&mut self, mut writer: W) -> std::io::Result<()> {
         self.finalize();
         for page in &self.pages {
