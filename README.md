@@ -1,0 +1,1 @@
+# Simple ESP32 NVS writer library for Rust

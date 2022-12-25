@@ -1,0 +1,13 @@
+[package]
+name = "esp32-nvs"
+version = "0.1.0"
+edition = "2021"
+description = "ESP32 NVS Partition generator"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crc = "3.0.0"
+heapless = "0.7.16"
+zerocopy = "0.6.1"
