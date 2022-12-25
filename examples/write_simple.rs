@@ -1,4 +1,4 @@
-use esp32_nvs::*;
+use esp32_nvs::{NvsKey, NvsPartition};
 use std::{fs::File, io::*, str::FromStr};
 
 fn main() -> Result<()> {

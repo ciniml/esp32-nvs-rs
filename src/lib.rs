@@ -1,3 +1,7 @@
+// main source file of esp32-nvs crate
+// Copyright 2022 Kenta Ida 
+// SPDX-License-Identifier: MIT
+//
 use std::{collections::HashMap, vec::Vec};
 
 use zerocopy::{AsBytes, ByteOrder, FromBytes, LittleEndian, Unaligned, U32};
