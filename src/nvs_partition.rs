@@ -669,6 +669,43 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         Ok(())
     }
 
+    fn write_encrypted_block<W: std::io::Write>(
+        writer: &mut W,
+        offset: usize,
+        key: &[u8; 64],
+        data: &[u8],
+    ) -> std::io::Result<()> {
+        const ADDRESS_SIZE: usize = core::mem::size_of::<usize>();
+        let mut tweak = [0u8; 16];
+        tweak[..ADDRESS_SIZE].copy_from_slice(&offset.to_le_bytes());
+        let mut crypter = openssl::symm::Crypter::new(openssl::symm::Cipher::aes_256_xts(), openssl::symm::Mode::Encrypt, key, Some(&tweak))
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let mut buffer = [0u8; 32];
+        crypter.update(data, &mut buffer).map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        writer.write_all(&buffer)?;
+        Ok(())
+    }
+
+    fn write_page_encrypted<W: std::io::Write>(
+        writer: &mut W,
+        page: &Page<NUMBER_OF_ENTRIES>,
+        mut offset: usize,
+        key: &[u8; 64],
+    ) -> std::io::Result<()> {
+        // page header and bitmap are not encrypted.
+        writer.write_all(page.header.as_bytes())?;
+        writer.write_all(page.bitmap.as_bytes())?;
+        offset += 64;
+        for entry in &page.entries {
+            match entry {
+                EntryOrData::Entry(ref entry) => Self::write_encrypted_block(writer, offset, key, &entry.as_bytes())?,
+                EntryOrData::Data(ref data) => Self::write_encrypted_block(writer, offset, key,data)?,
+            }
+            offset += 32;
+        }
+        Ok(())
+    }
+
     /// Write NVS partition to the `std::io::Write` stream.
     pub fn write<W: std::io::Write>(&mut self, mut writer: W) -> std::io::Result<()> {
         self.finalize();
@@ -680,6 +717,26 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
             let empty_page = Page::<NUMBER_OF_ENTRIES>::new();
             for _ in 0..pages_to_append {
                 Self::write_page(&mut writer, &empty_page)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Write encrypted NVS partition to the `std::io::Write` stream.
+    pub fn write_encrypted<W: std::io::Write>(&mut self, mut writer: W, key: &[u8; 64]) -> std::io::Result<()> {
+        self.finalize();
+        let bytes_per_page = (NUMBER_OF_ENTRIES + 2) * 32;
+        let mut offset = 0;
+        for page in &self.pages {
+            Self::write_page_encrypted(&mut writer, page, offset, key)?;
+            offset += bytes_per_page;
+        }
+        if self.pages.len() < Self::MINIMUM_NUMBER_OF_PAGES {
+            let pages_to_append = Self::MINIMUM_NUMBER_OF_PAGES - self.pages.len();
+            let empty_page = Page::<NUMBER_OF_ENTRIES>::new();
+            for _ in 0..pages_to_append {
+                Self::write_page_encrypted(&mut writer, &empty_page, offset, key)?;
+                offset += bytes_per_page;
             }
         }
         Ok(())

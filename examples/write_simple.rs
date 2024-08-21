@@ -47,6 +47,14 @@ fn main() -> Result<()> {
         )
         .unwrap();
     partition.write(&mut file)?;
-
+    
+    let key_1 = [0x11u8; 32];
+    let key_2 = [0x22u8; 32];
+    let mut key = [0; 64];
+    key[..32].copy_from_slice(&key_1);
+    key[32..].copy_from_slice(&key_2);
+    let mut file = File::create("output_encrypted.bin")?;
+    partition.write_encrypted(&mut file, &key)?;
+    
     Ok(())
 }
