@@ -723,25 +723,73 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
     }
 
     /// Write encrypted NVS partition to the `std::io::Write` stream.
-    pub fn write_encrypted<W: std::io::Write>(&mut self, mut writer: W, key: &[u8; 64]) -> std::io::Result<()> {
+    pub fn write_encrypted<W: std::io::Write>(&mut self, mut writer: W, key: &NvsEncryptionKey) -> std::io::Result<()> {
         self.finalize();
         let bytes_per_page = (NUMBER_OF_ENTRIES + 2) * 32;
         let mut offset = 0;
         for page in &self.pages {
-            Self::write_page_encrypted(&mut writer, page, offset, key)?;
+            Self::write_page_encrypted(&mut writer, page, offset, &key.key)?;
             offset += bytes_per_page;
         }
         if self.pages.len() < Self::MINIMUM_NUMBER_OF_PAGES {
             let pages_to_append = Self::MINIMUM_NUMBER_OF_PAGES - self.pages.len();
             let empty_page = Page::<NUMBER_OF_ENTRIES>::new();
             for _ in 0..pages_to_append {
-                Self::write_page_encrypted(&mut writer, &empty_page, offset, key)?;
+                Self::write_page_encrypted(&mut writer, &empty_page, offset, &key.key)?;
                 offset += bytes_per_page;
             }
         }
         Ok(())
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct NvsEncryptionKey {
+    key: [u8; 64],
+}
+
+impl NvsEncryptionKey {
+    // Create a new NVS encryption key.
+    pub fn new(key: [u8; 64]) -> Self {
+        Self { key }
+    }
+
+    // Generate a new NVS encryption key.
+    pub fn generate() -> Self {
+        let mut key = [0; 64];
+        openssl::rand::rand_bytes(&mut key).unwrap();
+        Self { key }
+    }
+
+    // Import NVS encryption key from a reader.
+    pub fn import<R: std::io::Read>(&mut self, reader: &mut R) -> std::io::Result<()> {
+        reader.read_exact(&mut self.key)?;
+        let crc_expected = calculate_crc([&self.key[..]]);
+        let mut crc_actual = [0; 4];
+        reader.read_exact(&mut crc_actual)?;
+        let crc_actual = u32::from_le_bytes(crc_actual);
+        if crc_expected != crc_actual {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CRC mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    // Export NVS encryption key to a writer.
+    pub fn export<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let crc = calculate_crc([&self.key[..]]);
+        writer.write_all(&self.key)?;
+        writer.write_all(&crc.to_le_bytes())?;
+        let remaining = 4096 - (64 + 4);
+        let mut padding = Vec::with_capacity(remaining);
+        padding.resize(remaining, 0xff);
+        writer.write_all(&padding)?;
+        Ok(())
+    }
+}
+
 
 #[cfg(test)]
 mod test {
@@ -1114,5 +1162,23 @@ mod test {
             LittleEndian::read_u32(&header[28..])
         );
         assert_eq!(header_crc32.as_bytes(), &header[28..]);
+    }
+
+    #[test]
+    fn test_encryption_key() {
+        let key_1 = [0x11u8; 32];
+        let key_2 = [0x22u8; 32];
+        let mut key = [0; 64];
+        key[..32].copy_from_slice(&key_1);
+        key[32..].copy_from_slice(&key_2);
+
+        let key = NvsEncryptionKey::new(key);
+        let mut buffer = Vec::new();
+        key.export(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), 4096);
+        let mut reader = std::io::Cursor::new(&buffer);
+        let mut key_imported = NvsEncryptionKey::new([0; 64]);
+        key_imported.import(&mut reader).unwrap();
+        assert_eq!(key_imported.key, key.key);
     }
 }

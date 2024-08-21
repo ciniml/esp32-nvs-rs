@@ -1,4 +1,4 @@
-use esp32_nvs::{NvsKey, NvsPartition};
+use esp32_nvs::{NvsEncryptionKey, NvsKey, NvsPartition};
 use std::{fs::File, io::*, str::FromStr};
 
 fn main() -> Result<()> {
@@ -53,8 +53,11 @@ fn main() -> Result<()> {
     let mut key = [0; 64];
     key[..32].copy_from_slice(&key_1);
     key[32..].copy_from_slice(&key_2);
+    let key = NvsEncryptionKey::new(key);
     let mut file = File::create("output_encrypted.bin")?;
     partition.write_encrypted(&mut file, &key)?;
-    
+    let mut file = File::create("output_key.bin")?;
+    key.export(&mut file)?;
+
     Ok(())
 }
