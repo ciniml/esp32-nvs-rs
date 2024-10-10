@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         )
         .unwrap();
     partition.write(&mut file)?;
-    
+
     let key_1 = [0x11u8; 32];
     let key_2 = [0x22u8; 32];
     let mut key = [0; 64];
