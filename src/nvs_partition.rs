@@ -71,6 +71,12 @@ impl RawPageState {
     }
 }
 
+impl Default for RawPageState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl From<PageState> for RawPageState {
     fn from(from: PageState) -> Self {
         let value = match from {
@@ -468,6 +474,12 @@ impl<const NUMBER_OF_ENTRIES: usize> Page<NUMBER_OF_ENTRIES> {
     }
 }
 
+impl Default for Page {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Fixed length (15 + 1) string to hold namespace and entry key string.
 pub type NvsKey = heapless::String<15>;
 
@@ -689,7 +701,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
 
         let mut buffer = [0u8; 32];
         buffer.copy_from_slice(data);
-        xts.encrypt_area(&mut buffer, 32, 0, |_| tweak.clone());
+        xts.encrypt_area(&mut buffer, 32, 0, |_| tweak);
         writer.write_all(&buffer)?;
         Ok(())
     }
@@ -707,7 +719,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         for entry in &page.entries {
             match entry {
                 EntryOrData::Entry(ref entry) => {
-                    Self::write_encrypted_block(writer, offset, key, &entry.as_bytes())?
+                    Self::write_encrypted_block(writer, offset, key, entry.as_bytes())?
                 }
                 EntryOrData::Data(ref data) => {
                     Self::write_encrypted_block(writer, offset, key, data)?
@@ -773,7 +785,7 @@ impl NvsEncryptionKey {
     // Generate a new NVS encryption key.
     pub fn generate() -> Self {
         let mut key = [0; 64];
-        let mut rng = rand::rngs::OsRng::default();
+        let mut rng = rand::rngs::OsRng;
         rng.fill_bytes(&mut key);
         Self { key }
     }

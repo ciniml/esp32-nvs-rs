@@ -6,8 +6,8 @@ fn main() -> Result<()> {
     let mut partition: NvsPartition = NvsPartition::new();
     let namespace = NvsKey::from_str("hoge").unwrap();
     let mut long_data = [0u8; 4097];
-    for i in 0..long_data.len() {
-        long_data[i] = (i & 0xff) as u8;
+    for (i, data) in long_data.iter_mut().enumerate() {
+        *data = (i & 0xff) as u8;
     }
     let mut long_string = String::with_capacity((126 - 10 - 1) * 32 - 1);
     for i in 0..long_string.capacity() {
