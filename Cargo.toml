@@ -7,6 +7,9 @@ license = "MIT"
 authors = ["Kenta Ida <fuga@fugafuga.org>"]
 
 [dependencies]
+aes = "0.8.4"
 crc = "3.0.0"
 heapless = "0.7.16"
+rand = "0.8.5"
+xts-mode = "0.5.1"
 zerocopy = "0.6.1"

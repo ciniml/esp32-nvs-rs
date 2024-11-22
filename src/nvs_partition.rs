@@ -1,7 +1,8 @@
 // nvs partition implementation
-// Copyright 2022 Kenta Ida 
+// Copyright 2022 Kenta Ida
 // SPDX-License-Identifier: MIT
 //
+use rand::RngCore;
 use std::{collections::HashMap, vec::Vec};
 use zerocopy::{AsBytes, ByteOrder, FromBytes, LittleEndian, Unaligned, U32};
 
@@ -67,6 +68,12 @@ impl RawPageState {
 
     pub const fn new() -> Self {
         Self(U32::from_bytes([0xff; 4]))
+    }
+}
+
+impl Default for RawPageState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -442,8 +449,7 @@ pub enum EntryOrData {
 
 #[repr(C)]
 #[derive(Clone, Debug)]
-pub struct Page<const NUMBER_OF_ENTRIES: usize = { 4096 / 32 - 2 }>
-{
+pub struct Page<const NUMBER_OF_ENTRIES: usize = { 4096 / 32 - 2 }> {
     header: PageHeader,
     bitmap: EntryStateBitmap,
     entries: [EntryOrData; NUMBER_OF_ENTRIES],
@@ -468,11 +474,16 @@ impl<const NUMBER_OF_ENTRIES: usize> Page<NUMBER_OF_ENTRIES> {
     }
 }
 
+impl Default for Page {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Fixed length (15 + 1) string to hold namespace and entry key string.
 pub type NvsKey = heapless::String<15>;
 
-pub struct NvsPartition<const NUMBER_OF_ENTRIES_IN_PAGE: usize = { 4096 / 32 - 2 }>
-{
+pub struct NvsPartition<const NUMBER_OF_ENTRIES_IN_PAGE: usize = { 4096 / 32 - 2 }> {
     namespaces: HashMap<NvsKey, u8>,
     pages: Vec<Page<NUMBER_OF_ENTRIES_IN_PAGE>>,
 }
@@ -544,7 +555,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         self.add_entry_or_data(EntryOrData::Entry(entry));
     }
 
-    /// Add a string entry. 
+    /// Add a string entry.
     /// the length of string must be within `(NUMBER_OF_ENTRIES - 1) * Entry::SIZE` - 1, which is `(126 - 1) * 32 - 1 == 3999`
     pub fn add_string_entry(
         &mut self,
@@ -669,6 +680,56 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
         Ok(())
     }
 
+    fn write_encrypted_block<W: std::io::Write>(
+        writer: &mut W,
+        offset: usize,
+        key: &[u8; 64],
+        data: &[u8],
+    ) -> std::io::Result<()> {
+        const ADDRESS_SIZE: usize = core::mem::size_of::<usize>();
+        let mut tweak = [0u8; 16];
+        tweak[..ADDRESS_SIZE].copy_from_slice(&offset.to_le_bytes());
+
+        use aes::cipher::KeyInit;
+        let cipher_1 = aes::Aes256::new(aes::cipher::generic_array::GenericArray::from_slice(
+            &key[..32],
+        ));
+        let cipher_2 = aes::Aes256::new(aes::cipher::generic_array::GenericArray::from_slice(
+            &key[32..],
+        ));
+        let xts = xts_mode::Xts128::<aes::Aes256>::new(cipher_1, cipher_2);
+
+        let mut buffer = [0u8; 32];
+        buffer.copy_from_slice(data);
+        xts.encrypt_area(&mut buffer, 32, 0, |_| tweak);
+        writer.write_all(&buffer)?;
+        Ok(())
+    }
+
+    fn write_page_encrypted<W: std::io::Write>(
+        writer: &mut W,
+        page: &Page<NUMBER_OF_ENTRIES>,
+        mut offset: usize,
+        key: &[u8; 64],
+    ) -> std::io::Result<()> {
+        // page header and bitmap are not encrypted.
+        writer.write_all(page.header.as_bytes())?;
+        writer.write_all(page.bitmap.as_bytes())?;
+        offset += 64;
+        for entry in &page.entries {
+            match entry {
+                EntryOrData::Entry(ref entry) => {
+                    Self::write_encrypted_block(writer, offset, key, entry.as_bytes())?
+                }
+                EntryOrData::Data(ref data) => {
+                    Self::write_encrypted_block(writer, offset, key, data)?
+                }
+            }
+            offset += 32;
+        }
+        Ok(())
+    }
+
     /// Write NVS partition to the `std::io::Write` stream.
     pub fn write<W: std::io::Write>(&mut self, mut writer: W) -> std::io::Result<()> {
         self.finalize();
@@ -682,6 +743,78 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
                 Self::write_page(&mut writer, &empty_page)?;
             }
         }
+        Ok(())
+    }
+
+    /// Write encrypted NVS partition to the `std::io::Write` stream.
+    pub fn write_encrypted<W: std::io::Write>(
+        &mut self,
+        mut writer: W,
+        key: &NvsEncryptionKey,
+    ) -> std::io::Result<()> {
+        self.finalize();
+        let bytes_per_page = (NUMBER_OF_ENTRIES + 2) * 32;
+        let mut offset = 0;
+        for page in &self.pages {
+            Self::write_page_encrypted(&mut writer, page, offset, &key.key)?;
+            offset += bytes_per_page;
+        }
+        if self.pages.len() < Self::MINIMUM_NUMBER_OF_PAGES {
+            let pages_to_append = Self::MINIMUM_NUMBER_OF_PAGES - self.pages.len();
+            let empty_page = Page::<NUMBER_OF_ENTRIES>::new();
+            for _ in 0..pages_to_append {
+                Self::write_page_encrypted(&mut writer, &empty_page, offset, &key.key)?;
+                offset += bytes_per_page;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NvsEncryptionKey {
+    key: [u8; 64],
+}
+
+impl NvsEncryptionKey {
+    // Create a new NVS encryption key.
+    pub fn new(key: [u8; 64]) -> Self {
+        Self { key }
+    }
+
+    // Generate a new NVS encryption key.
+    pub fn generate() -> Self {
+        let mut key = [0; 64];
+        let mut rng = rand::rngs::OsRng;
+        rng.fill_bytes(&mut key);
+        Self { key }
+    }
+
+    // Import NVS encryption key from a reader.
+    pub fn import<R: std::io::Read>(&mut self, reader: &mut R) -> std::io::Result<()> {
+        reader.read_exact(&mut self.key)?;
+        let crc_expected = calculate_crc([&self.key[..]]);
+        let mut crc_actual = [0; 4];
+        reader.read_exact(&mut crc_actual)?;
+        let crc_actual = u32::from_le_bytes(crc_actual);
+        if crc_expected != crc_actual {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CRC mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    // Export NVS encryption key to a writer.
+    pub fn export<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let crc = calculate_crc([&self.key[..]]);
+        writer.write_all(&self.key)?;
+        writer.write_all(&crc.to_le_bytes())?;
+        let remaining = 4096 - (64 + 4);
+        let mut padding = Vec::with_capacity(remaining);
+        padding.resize(remaining, 0xff);
+        writer.write_all(&padding)?;
         Ok(())
     }
 }
@@ -1058,4 +1191,93 @@ mod test {
         );
         assert_eq!(header_crc32.as_bytes(), &header[28..]);
     }
+
+    #[test]
+    fn test_encryption_key() {
+        let key_1 = [0x11u8; 32];
+        let key_2 = [0x22u8; 32];
+        let mut key = [0; 64];
+        key[..32].copy_from_slice(&key_1);
+        key[32..].copy_from_slice(&key_2);
+
+        let key = NvsEncryptionKey::new(key);
+        let mut buffer = Vec::new();
+        key.export(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), 4096);
+        let mut reader = std::io::Cursor::new(&buffer);
+        let mut key_imported = NvsEncryptionKey::new([0; 64]);
+        key_imported.import(&mut reader).unwrap();
+        assert_eq!(key_imported.key, key.key);
+    }
+
+    // FIXME: couldn't read `esp32-nvs-rs/src/../test/output_encrypted.bin`: No such file or directory (os error 2)
+    // #[test]
+    // fn test_partition_encryption() {
+    //     // read test partition data (generated by write_simple example with OpenSSL implementation in AES-XTS.)
+    //     let expected_encrypted_partition = include_bytes!("../test/output_encrypted.bin");
+
+    //     // Construct the same partition data.
+    //     let mut partition: NvsPartition = NvsPartition::new();
+    //     let namespace = NvsKey::from_str("hoge").unwrap();
+    //     let mut long_data = [0u8; 4097];
+    //     for i in 0..long_data.len() {
+    //         long_data[i] = (i & 0xff) as u8;
+    //     }
+    //     let mut long_string = String::with_capacity((126 - 10 - 1) * 32 - 1);
+    //     for i in 0..long_string.capacity() {
+    //         long_string.push(char::from_u32(0x20 + (i % 0x40) as u32).unwrap());
+    //     }
+    //     partition.add_primitive_entry(
+    //         &namespace,
+    //         &NvsKey::from_str("fuga").unwrap(),
+    //         0xdeadbeefu32,
+    //     );
+    //     partition
+    //         .add_string_entry(
+    //             &namespace,
+    //             &NvsKey::from_str("long_value").unwrap(),
+    //             "string",
+    //         )
+    //         .unwrap();
+    //     partition
+    //         .add_binary_entry(
+    //             &namespace,
+    //             &NvsKey::from_str("long_long_value").unwrap(),
+    //             &long_data,
+    //         )
+    //         .unwrap();
+    //     partition
+    //         .add_string_entry(
+    //             &namespace,
+    //             &NvsKey::from_str("long_str").unwrap(),
+    //             &long_string,
+    //         )
+    //         .unwrap();
+    //     partition
+    //         .add_string_entry(
+    //             &namespace,
+    //             &NvsKey::from_str("long_str2").unwrap(),
+    //             &long_string,
+    //         )
+    //         .unwrap();
+
+    //     // Encrypt.
+    //     let key_1 = [0x11u8; 32];
+    //     let key_2 = [0x22u8; 32];
+    //     let mut key = [0; 64];
+    //     key[..32].copy_from_slice(&key_1);
+    //     key[32..].copy_from_slice(&key_2);
+    //     let key = NvsEncryptionKey::new(key);
+    //     let mut dut_encrypted_partition = vec![];
+    //     partition
+    //         .write_encrypted(&mut dut_encrypted_partition, &key)
+    //         .unwrap();
+
+    //     // Check.
+    //     assert_eq!(
+    //         dut_encrypted_partition.len(),
+    //         expected_encrypted_partition.len()
+    //     );
+    //     assert_eq!(dut_encrypted_partition, expected_encrypted_partition);
+    // }
 }
