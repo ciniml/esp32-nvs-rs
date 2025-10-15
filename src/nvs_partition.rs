@@ -631,7 +631,7 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
             let bytes_remaining = value_len - bytes_written;
             let chunk_size = usize::min((num_remaining_entries - 1) * Entry::SIZE, bytes_remaining);
             let mut chunk_data = &value[bytes_written..bytes_written + chunk_size];
-            let span = chunk_size.div_ceil(Entry::SIZE);
+            let span = chunk_size.div_ceil(Entry::SIZE) + 1;
             assert!(span >= 1);
             assert!(span < NUMBER_OF_ENTRIES);
             let entry =
