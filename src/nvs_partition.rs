@@ -504,15 +504,14 @@ impl<const NUMBER_OF_ENTRIES: usize> NvsPartition<NUMBER_OF_ENTRIES> {
     }
 
     fn add_entry_or_data(&mut self, entry_or_data: EntryOrData) {
-        let (page, index) = if let Some((page, index)) = self.pages.last_mut().and_then(|page| {
-            (0..NUMBER_OF_ENTRIES)
-                .find(|i| page.bitmap.get(*i) == EntryState::Empty)
-                .map(|index| (page, index))
-        }) {
-            (page, index)
-        } else {
-            let page = self.new_page();
-            (page, 0)
+        // Look for a free slot in the last page first, taking only an immutable
+        // borrow so it is released before we may need `new_page` (`&mut self`).
+        let free_index = self.pages.last().and_then(|page| {
+            (0..NUMBER_OF_ENTRIES).find(|i| page.bitmap.get(*i) == EntryState::Empty)
+        });
+        let (page, index) = match free_index {
+            Some(index) => (self.pages.last_mut().unwrap(), index),
+            None => (self.new_page(), 0),
         };
         page.bitmap.set(index, EntryState::Written);
         page.entries[index] = entry_or_data;
